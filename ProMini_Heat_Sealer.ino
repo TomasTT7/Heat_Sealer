@@ -180,7 +180,7 @@ void loop()
       if(displayCurrent > 0)
       {
         float wireRes = ((float)displayVoltage / 1000.0) / ((float)displayCurrent / 1000.0);
-        float wireTemp = (WIRE_TEMP + wireRes / (WIRE_RES * 0.00017) - 5882.4);
+        float wireTemp = (WIRE_TEMP + wireRes / (WIRE_RES * 0.0004) - 2500.0);
         if(wireTemp < 0) displayWireTemp = 20;
         else displayWireTemp = (uint16_t)wireTemp;
       }
