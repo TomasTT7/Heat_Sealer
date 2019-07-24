@@ -26,19 +26,22 @@ extern "C"{
 #define B_PRESS                       5                               // 5 * 20ms = 100ms
 #define B_DEBOUNCE                    5                               // 8 * 20ms = 100ms
 #define TIMER1_RES                    20                              // [ms] interrupt fires every x ms
-#define COOL_DOWN                     5000                            // [ms] forced gap between successive heat sealing rounds
+#define COOL_DOWN                     10000                           // [ms] forced gap between successive heat sealing rounds
 #define DISPLAY_RATE                  260                             // [ms] update rate of displayed data
 #define ADC_V                         4.97                            // [V] ADC voltage reference - (5.01 original)
 #define VD1_RATIO                     0.248                           // voltage divider 1 ratio - (0.249 original)
 #define VD2_RATIO                     0.247                           // voltage divider 2 ratio - (0.248 original)
 #define ACS712_SENS                   66                              // [mV/A] sensitivity
 #define ACS712_OFFSET                 1.5                             // [ADC] midpoint offset
+#define WIRE_RES                      0.280                           // [Ω] wire restistance at 20°C
+#define WIRE_TEMP                     20.0                            // [°C] temperature of wire resistance measurement
 
 
 uint16_t displayVoltage               = 0;                            // [mV] 0-65535 range (0-65.5V)
 uint16_t displayCurrent               = 0;                            // [mA] 0-65535 range (0-65.5A)
 uint32_t displayEnergy                = 0;                            // [mWs] 0-4294967295 range (0-9999Ws)
-uint16_t sealDuration                 = 5000;                         // [ms] 100-60000 range
+uint16_t displayWireTemp              = 0;                            // [°C] 0-65535 range (0-999°C)
+uint16_t sealDuration                 = 10000;                        // [ms] 100-60000 range
 
 volatile uint16_t measuredDuration    = 0;
 volatile uint16_t measuredDisplay     = 0;
@@ -54,7 +57,14 @@ volatile uint8_t ButtonDebounce3      = 0;
 volatile uint8_t chngAllowed          = 1;
 volatile uint8_t inCoolDown           = 0;
 
-volatile uint8_t update_flags         = 0;                            // Bit 0: Seal Duration, Bit 1: enable Cool Down, Bit 2: disable Cool Down, Bit 3: Voltage, Bit 4: Current, Bit 5: Energy, Bit 6: Passed Time
+volatile uint8_t update_flags         = 0;                            // Bit 0: Seal Duration
+                                                                      // Bit 1: enable Cool Down
+                                                                      // Bit 2: disable Cool Down
+                                                                      // Bit 3: Voltage
+                                                                      // Bit 4: Current
+                                                                      // Bit 5: Energy
+                                                                      // Bit 6: Passed Time
+                                                                      // Bit 7: Wire Temperature
 
 
 // Setup function ---------------------------------------------------------------------------------
@@ -119,7 +129,7 @@ void loop()
   /* Button 3 Press - start Heat Sealing */
   if(pressButton3 >= B_PRESS)
   {
-    if(chngAllowed && !inCoolDown)
+    if(chngAllowed && !inCoolDown)                                    // START HEAT SEALING
     {
       chngAllowed = 0;
       measuredDuration = 0;
@@ -127,6 +137,15 @@ void loop()
       TCNT1 = 0;                                                      // reset counter
 
       PORTB |= 0b00100000;                                            // D13 set HIGH (transistor's gate)
+    }
+    else if(!chngAllowed)                                             // MANUAL ABORT
+    {
+      PORTB &= 0b11011111;                                            // D13 set LOW (transistor's gate)
+      
+      chngAllowed = 1;
+      measuredDuration = 0;
+      inCoolDown = 1;
+      update_flags |= 0b00000011;                                     // update Cool Down, Seal Duration
     }
     
     pressButton3 = 0;
@@ -157,17 +176,23 @@ void loop()
     if(!chngAllowed)
     {
       displayEnergy += deltaEnergy;
+
+      if(displayCurrent > 0)
+      {
+        float wireRes = ((float)displayVoltage / 1000.0) / ((float)displayCurrent / 1000.0);
+        float wireTemp = (WIRE_TEMP + wireRes / (WIRE_RES * 0.00017) - 5882.4);
+        if(wireTemp < 0) displayWireTemp = 20;
+        else displayWireTemp = (uint16_t)wireTemp;
+      }
+      else
+      {
+        displayWireTemp = 20;
+      }
     }
 
 #ifdef BLUETOOTH
 
     Serial.print(millis());
-    Serial.print(',');
-    Serial.print(adc_acs712);
-    Serial.print(',');
-    Serial.print(adc_voltage_1);
-    Serial.print(',');
-    Serial.print(adc_voltage_2);
     Serial.print(',');
     Serial.print(firstVoltage);
     Serial.print(',');
@@ -175,7 +200,9 @@ void loop()
     Serial.print(',');
     Serial.print(displayCurrent);
     Serial.print(',');
-    Serial.println(displayEnergy);
+    Serial.print(displayEnergy);
+    Serial.print(',');
+    Serial.println(displayWireTemp);
 
 #endif /* BLUETOOTH */
 
@@ -224,6 +251,12 @@ void loop()
   {
     update_flags &= 0b11011111;
     OLED_update_energy();
+  }
+
+  if(update_flags & 0b10000000)                                       // update Wire Temperature
+  {
+    update_flags &= 0b01111111;
+    OLED_update_wire_temperature();
   }
 }
 
@@ -536,9 +569,11 @@ void OLED_initial_screen(void)
   OLED_draw_chars_1x8(dot, 33, 3, 3);
   
   OLED_draw_char_16x32(sealDuration / 100 % 10, 39, 0);
-  OLED_draw_string_8x16((uint8_t*)"s", 48, 4, 1);
+  OLED_draw_string_8x16((uint8_t*)"s", 0, 4, 1);
 
-  OLED_draw_string_8x16((uint8_t*)" ", 60, 4, 1);                     // Cool Down sign " " or "!"
+  OLED_draw_string_8x16((uint8_t*)" ", 27, 4, 1);                     // Cool Down sign " " or "!"
+  OLED_draw_string_8x16((uint8_t*)" 20^C", 44, 4, 5);                 // Wire Temperature
+  OLED_draw_string_8x16((uint8_t*)" ", 93, 4, 1);                     // Cool Down sign " " or "!"
 
   OLED_draw_char_16x32(15, 64, 0);                                    // ' '
   OLED_draw_char_16x32(15, 80, 0);                                    // ' '
@@ -691,8 +726,42 @@ void OLED_update_current(void)
 */
 void OLED_update_cool_down(uint8_t enable)
 {
-  if(enable) OLED_draw_string_8x16((uint8_t*)"!", 60, 4, 1);
-  else       OLED_draw_string_8x16((uint8_t*)" ", 60, 4, 1);
+  if(enable)
+  {
+    OLED_draw_string_8x16((uint8_t*)"!", 27, 4, 1);
+    OLED_draw_string_8x16((uint8_t*)"!", 93, 4, 1);
+  }
+  else
+  {
+    OLED_draw_string_8x16((uint8_t*)" ", 27, 4, 1);
+    OLED_draw_string_8x16((uint8_t*)" ", 93, 4, 1);
+  }
+}
+
+
+/*
+  Update Wire Temperature.
+*/
+void OLED_update_wire_temperature(void)
+{
+  uint8_t temperature[3];
+
+  if(displayWireTemp >= 999)
+  {
+    temperature[0] = '9';
+    temperature[1] = '9';
+    temperature[2] = '9';
+  }
+  else
+  {
+    if(displayWireTemp >= 100) temperature[0] = displayWireTemp / 100 % 10 + '0';
+    else temperature[0] = ' ';
+    if(displayWireTemp >= 10) temperature[1] = displayWireTemp / 10 % 10 + '0';
+    else temperature[1] = ' ';
+    temperature[2] = displayWireTemp % 10 + '0';
+  }
+  
+  OLED_draw_string_8x16(temperature, 44, 4, 3);
 }
 
 
@@ -790,7 +859,7 @@ ISR(TIMER1_COMPA_vect)
   if(measuredDisplay >= DISPLAY_RATE)
   {
     measuredDisplay = 0;
-    update_flags |= 0b00111000;                                       // update Energy, Voltage, Current
+    update_flags |= 0b10111000;                                       // update Energy, Voltage, Current, Wire Temperature
   }
 
   if(!chngAllowed && measuredDisplay >= (DISPLAY_RATE - TIMER1_RES))
