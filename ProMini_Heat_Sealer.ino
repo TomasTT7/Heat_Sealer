@@ -43,6 +43,7 @@ uint32_t displayEnergy                = 0;                            // [mWs] 0
 uint16_t displayWireTemp              = 0;                            // [°C] 0-65535 range (0-999°C)
 uint16_t sealDuration                 = 10000;                        // [ms] 100-60000 range
 
+volatile uint32_t measuredIdleTime    = 0;                            // [ms] 0-4294967295 range (0-4294967s)
 volatile uint16_t measuredDuration    = 0;
 volatile uint16_t measuredDisplay     = 0;
 volatile uint8_t sampleADC            = 0;
@@ -145,6 +146,7 @@ void loop()
       chngAllowed = 1;
       measuredDuration = 0;
       inCoolDown = 1;
+      measuredIdleTime = 0;
       update_flags |= 0b00000011;                                     // update Cool Down, Seal Duration
     }
     
@@ -235,10 +237,11 @@ void loop()
     OLED_update_cool_down(0);
   }
 
-  if(update_flags & 0b00001000)                                       // update Voltage
+  if(update_flags & 0b00001000)                                       // update Voltage and Idle Time
   {
     update_flags &= 0b11110111;
     OLED_update_voltage();
+    OLED_update_idle_time();
   }
 
   if(update_flags & 0b00010000)                                       // update Current
@@ -571,9 +574,9 @@ void OLED_initial_screen(void)
   OLED_draw_char_16x32(sealDuration / 100 % 10, 39, 0);
   OLED_draw_string_8x16((uint8_t*)"s", 0, 4, 1);
 
-  OLED_draw_string_8x16((uint8_t*)" ", 27, 4, 1);                     // Cool Down sign " " or "!"
-  OLED_draw_string_8x16((uint8_t*)" 20^C", 44, 4, 5);                 // Wire Temperature
-  OLED_draw_string_8x16((uint8_t*)" ", 93, 4, 1);                     // Cool Down sign " " or "!"
+  OLED_draw_string_8x16((uint8_t*)"00:00", 17, 4, 5);                 // Idle Time
+  OLED_draw_string_8x16((uint8_t*)" ", 57, 4, 1);                     // Cool Down sign " " or "!"
+  OLED_draw_string_8x16((uint8_t*)" 20^C", 65, 4, 5);                 // Wire Temperature
 
   OLED_draw_char_16x32(15, 64, 0);                                    // ' '
   OLED_draw_char_16x32(15, 80, 0);                                    // ' '
@@ -728,13 +731,11 @@ void OLED_update_cool_down(uint8_t enable)
 {
   if(enable)
   {
-    OLED_draw_string_8x16((uint8_t*)"!", 27, 4, 1);
-    OLED_draw_string_8x16((uint8_t*)"!", 93, 4, 1);
+    OLED_draw_string_8x16((uint8_t*)"!", 57, 4, 1);
   }
   else
   {
-    OLED_draw_string_8x16((uint8_t*)" ", 27, 4, 1);
-    OLED_draw_string_8x16((uint8_t*)" ", 93, 4, 1);
+    OLED_draw_string_8x16((uint8_t*)" ", 57, 4, 1);
   }
 }
 
@@ -761,7 +762,38 @@ void OLED_update_wire_temperature(void)
     temperature[2] = displayWireTemp % 10 + '0';
   }
   
-  OLED_draw_string_8x16(temperature, 44, 4, 3);
+  OLED_draw_string_8x16(temperature, 65, 4, 3);
+}
+
+
+/*
+  Update Idle Time.
+*/
+void OLED_update_idle_time(void)
+{
+  uint8_t _minute = measuredIdleTime / 60000;
+  uint8_t _second = measuredIdleTime / 1000 % 60;
+  
+  uint8_t idle[5];
+
+  if(measuredIdleTime >= 5999000)
+  {
+    idle[0] = '9';
+    idle[1] = '9';
+    idle[2] = ':';
+    idle[3] = '5';
+    idle[4] = '9';
+  }
+  else
+  {
+    idle[0] = _minute / 10 % 10 + '0';
+    idle[1] = _minute % 10 + '0';
+    idle[2] = ':';
+    idle[3] = _second / 10 % 10 + '0';
+    idle[4] = _second % 10 + '0';
+  }
+  
+  OLED_draw_string_8x16(idle, 17, 4, 5);
 }
 
 
@@ -843,6 +875,7 @@ ISR(TIMER1_COMPA_vect)
     chngAllowed = 1;
     measuredDuration = 0;
     inCoolDown = 1;
+    measuredIdleTime = 0;
     update_flags |= 0b00000011;                                       // update Cool Down, Seal Duration
   }
   
@@ -866,6 +899,9 @@ ISR(TIMER1_COMPA_vect)
   {
     update_flags |= 0b01000000;                                       // update Passed Time
   }
+
+  /* Idle Time */
+  if(chngAllowed) measuredIdleTime += TIMER1_RES;
 
   /* ADC */
   sampleADC = 1;
